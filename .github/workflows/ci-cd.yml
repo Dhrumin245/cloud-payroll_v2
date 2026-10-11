@@ -309,7 +309,7 @@ jobs:
           kustomize build . > "../cloud-payroll-$tag.yaml"
           grep -c "image: ghcr.io/$repo/" "../cloud-payroll-$tag.yaml" | sed 's/^/image references rewritten: /'
           echo "MANIFEST=cloud-payroll-$tag.yaml" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kubernetes-manifests
           path: ${{ env.MANIFEST }}

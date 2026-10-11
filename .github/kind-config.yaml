@@ -1,0 +1,12 @@
+# kind cluster used by the end-to-end job: one node, labelled so the ingress-nginx "kind" manifest
+# (which needs ingress-ready=true) can schedule its controller.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"

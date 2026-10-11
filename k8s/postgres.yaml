@@ -1,0 +1,101 @@
+# One PostgreSQL server for all four services (a database AND a login role per service,
+# created by the init script in the `postgres-init` ConfigMap on first start).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: cloud-payroll
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: cloud-payroll
+  annotations:
+    # The official postgres image starts as root and drops to the postgres user itself.
+    # Forcing it non-root / read-only needs extra volume work that is easy to get wrong, so for
+    # this demo we keep the image's tested default. See k8s/README.md, "Hardening".
+    ignore-check.kube-linter.io/run-as-non-root: "official postgres image drops privileges itself"
+    ignore-check.kube-linter.io/no-read-only-root-fs: "postgres writes to its data dir and /var/run"
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        app.kubernetes.io/part-of: cloud-payroll
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: PGDATA     # a sub-directory: the volume root contains lost+found
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: POSTGRES_PASSWORD } }
+            - name: AUTH_DB_PASSWORD        # read by the init script
+              valueFrom: { secretKeyRef: { name: app-secrets, key: AUTH_DB_PASSWORD } }
+            - name: EMPLOYEE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: EMPLOYEE_DB_PASSWORD } }
+            - name: LEAVE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: LEAVE_DB_PASSWORD } }
+            - name: PAYROLL_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: PAYROLL_DB_PASSWORD } }
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

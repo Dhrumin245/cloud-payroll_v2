@@ -1,0 +1,13 @@
+# Non-secret settings shared by the four services. Secrets live in the `app-secrets` Secret,
+# which is created from .env (see k8s/README.md), never stored in git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  COMPANY_NAME: "Your Company Name"      # printed on payslips
+  COMPANY_ADDRESS: ""
+  EMPLOYEE_SERVICE_URL: "http://employee-service:8000"
+  LEAVE_SERVICE_URL: "http://leave-service:8000"

@@ -1,0 +1,89 @@
+# Replaces the nginx gateway of docker-compose. Same routes; everything else (including
+# /metrics, /ready, /docs) is NOT routed, so the ingress controller answers 404 for it.
+# Needs the minikube ingress addon:  minikube addons enable ingress
+# ingress-nginx overwrites X-Forwarded-For with the real client address (use-forwarded-headers
+# is off by default), which auth-service relies on for its login rate limit.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/part-of: cloud-payroll
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"   # a payroll run calls two other services
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 8000
+          - path: /users
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 8000
+          - path: /employees
+            pathType: Prefix
+            backend:
+              service:
+                name: employee-service
+                port:
+                  number: 8000
+          - path: /leaves
+            pathType: Prefix
+            backend:
+              service:
+                name: leave-service
+                port:
+                  number: 8000
+          - path: /leave-types
+            pathType: Prefix
+            backend:
+              service:
+                name: leave-service
+                port:
+                  number: 8000
+          - path: /payroll
+            pathType: Prefix
+            backend:
+              service:
+                name: payroll-service
+                port:
+                  number: 8000
+          - path: /payslips
+            pathType: Prefix
+            backend:
+              service:
+                name: payroll-service
+                port:
+                  number: 8000
+          - path: /attendance
+            pathType: Prefix
+            backend:
+              service:
+                name: payroll-service
+                port:
+                  number: 8000
+          - path: /variable-pay
+            pathType: Prefix
+            backend:
+              service:
+                name: payroll-service
+                port:
+                  number: 8000
+          - path: /settings
+            pathType: Prefix
+            backend:
+              service:
+                name: payroll-service
+                port:
+                  number: 8000

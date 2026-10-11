@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cloud-payroll
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - generated/postgres-init.yaml
+  - generated/prometheus-config.yaml
+  - generated/grafana-provisioning.yaml
+  - generated/grafana-dashboards.yaml
+  - postgres.yaml
+  - auth.yaml
+  - employee.yaml
+  - leave.yaml
+  - payroll.yaml
+  - ingress.yaml
+  - monitoring.yaml
+
+# Change registry/tag in one place (CI uses this):  kustomize edit set image cloud-payroll/auth-service=ghcr.io/you/auth-service:<sha>
+images:
+  - name: cloud-payroll/auth-service
+    newTag: local
+  - name: cloud-payroll/employee-service
+    newTag: local
+  - name: cloud-payroll/leave-service
+    newTag: local
+  - name: cloud-payroll/payroll-service
+    newTag: local

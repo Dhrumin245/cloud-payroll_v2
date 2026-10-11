@@ -1,0 +1,38 @@
+# Prometheus config for Kubernetes (the docker-compose one is prometheus.yml).
+# Each service runs several replicas, and a Service name would reach a random pod, so pods are
+# discovered one by one (needs the Role in k8s/monitoring.yaml). Pods opt in with the annotations
+# prometheus.io/scrape: "true" and prometheus.io/port. The alert rules are the same file as in compose.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: services              # keeps the alert rules and dashboard identical to compose
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [cloud-payroll]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_phase]
+        action: keep
+        regex: Running
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: service
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

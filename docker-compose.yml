@@ -1,0 +1,246 @@
+# Whole system with one command:
+#   python scripts/init_env.py        (once: creates .env with random secrets)
+#   docker compose up --build         (then open http://localhost:8080/health)
+#   Grafana http://localhost:3000   Prometheus http://localhost:9090   (this machine only)
+#
+# Only the gateway is published. Postgres and the services are reachable only inside the
+# compose network. To also reach each service's /docs directly during development, add the
+# dev file:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+name: cloud-payroll
+
+x-service-common: &service-common
+  restart: unless-stopped
+  networks: [backend]
+
+x-env-common: &env-common
+  JWT_SECRET: ${JWT_SECRET:?run python scripts/init_env.py to create .env}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  ENVIRONMENT: production
+
+services:
+  # ------------------------------------------------------------------ database
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run python scripts/init_env.py to create .env}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?missing in .env}
+      EMPLOYEE_DB_PASSWORD: ${EMPLOYEE_DB_PASSWORD:?missing in .env}
+      LEAVE_DB_PASSWORD: ${LEAVE_DB_PASSWORD:?missing in .env}
+      PAYROLL_DB_PASSWORD: ${PAYROLL_DB_PASSWORD:?missing in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # runs only when the volume is first created; to re-run it: docker compose down -v
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ------------------------------------------------------------------ auth-service
+  auth-migrate:
+    build: ./services/auth-service
+    image: cloud-payroll/auth-service:local
+    networks: [backend]
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://auth_svc:${AUTH_DB_PASSWORD}@postgres:5432/auth_db
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  auth-bootstrap-admin:
+    build: ./services/auth-service
+    image: cloud-payroll/auth-service:local
+    networks: [backend]
+    restart: "no"
+    command:
+      - python
+      - -m
+      - app.cli
+      - create-user
+      - --username
+      - ${ADMIN_USERNAME:-admin}
+      - --role
+      - admin
+      - --password-env
+      - ADMIN_PASSWORD
+      - --if-not-exists
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://auth_svc:${AUTH_DB_PASSWORD}@postgres:5432/auth_db
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?missing in .env}
+    depends_on:
+      auth-migrate: { condition: service_completed_successfully }
+
+  auth-service:
+    <<: *service-common
+    build: ./services/auth-service
+    image: cloud-payroll/auth-service:local
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://auth_svc:${AUTH_DB_PASSWORD}@postgres:5432/auth_db
+      TRUST_FORWARDED_FOR: "true"  # behind the gateway, which overwrites X-Forwarded-For
+    depends_on:
+      auth-migrate: { condition: service_completed_successfully }
+
+  # ------------------------------------------------------------------ employee-service
+  employee-migrate:
+    build: ./services/employee-service
+    image: cloud-payroll/employee-service:local
+    networks: [backend]
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://employee_svc:${EMPLOYEE_DB_PASSWORD}@postgres:5432/employee_db
+      BANK_ENCRYPTION_KEY: ${BANK_ENCRYPTION_KEY:?missing in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  employee-service:
+    <<: *service-common
+    build: ./services/employee-service
+    image: cloud-payroll/employee-service:local
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://employee_svc:${EMPLOYEE_DB_PASSWORD}@postgres:5432/employee_db
+      BANK_ENCRYPTION_KEY: ${BANK_ENCRYPTION_KEY:?missing in .env}
+    depends_on:
+      employee-migrate: { condition: service_completed_successfully }
+
+  # ------------------------------------------------------------------ leave-service
+  leave-migrate:
+    build: ./services/leave-service
+    image: cloud-payroll/leave-service:local
+    networks: [backend]
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://leave_svc:${LEAVE_DB_PASSWORD}@postgres:5432/leave_db
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  leave-service:
+    <<: *service-common
+    build: ./services/leave-service
+    image: cloud-payroll/leave-service:local
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://leave_svc:${LEAVE_DB_PASSWORD}@postgres:5432/leave_db
+      EMPLOYEE_SERVICE_URL: http://employee-service:8000
+    depends_on:
+      leave-migrate: { condition: service_completed_successfully }
+      employee-service: { condition: service_healthy }
+
+  # ------------------------------------------------------------------ payroll-service
+  payroll-migrate:
+    build: ./services/payroll-service
+    image: cloud-payroll/payroll-service:local
+    networks: [backend]
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://payroll_svc:${PAYROLL_DB_PASSWORD}@postgres:5432/payroll_db
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  payroll-service:
+    <<: *service-common
+    build: ./services/payroll-service
+    image: cloud-payroll/payroll-service:local
+    environment:
+      <<: *env-common
+      DATABASE_URL: postgresql+psycopg://payroll_svc:${PAYROLL_DB_PASSWORD}@postgres:5432/payroll_db
+      EMPLOYEE_SERVICE_URL: http://employee-service:8000
+      LEAVE_SERVICE_URL: http://leave-service:8000
+      COMPANY_NAME: ${COMPANY_NAME:-Your Company Name}
+      COMPANY_ADDRESS: ${COMPANY_ADDRESS:-}
+    depends_on:
+      payroll-migrate: { condition: service_completed_successfully }
+      employee-service: { condition: service_healthy }
+      leave-service: { condition: service_healthy }
+
+  # ------------------------------------------------------------------ gateway
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    networks: [backend]
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      auth-service: { condition: service_healthy }
+      employee-service: { condition: service_healthy }
+      leave-service: { condition: service_healthy }
+      payroll-service: { condition: service_healthy }
+      auth-bootstrap-admin: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ------------------------------------------------------------------ monitoring
+  # Reachable only from this machine (127.0.0.1), never through the public gateway.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    networks: [backend]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheusdata:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run python scripts/init_env.py to create .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cloud-payroll.json
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      prometheus: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+networks:
+  backend:
+
+volumes:
+  pgdata:
+  prometheusdata:
+  grafanadata:

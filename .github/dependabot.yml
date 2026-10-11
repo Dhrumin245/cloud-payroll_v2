@@ -1,0 +1,31 @@
+# Weekly pull requests that bump pinned dependencies (GitHub Actions are pinned to commit SHAs,
+# which Dependabot updates for you) so security fixes do not depend on anyone remembering.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /services/auth-service
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /services/employee-service
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /services/leave-service
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /services/payroll-service
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /services/auth-service
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /services/employee-service
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /services/leave-service
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /services/payroll-service
+    schedule: { interval: weekly }

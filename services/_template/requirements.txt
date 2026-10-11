@@ -1,0 +1,6 @@
+fastapi>=0.115,<0.137  # 0.142+ breaks prometheus-fastapi-instrumentator 7.1
+uvicorn[standard]>=0.30,<1
+pydantic-settings>=2.4,<3
+PyJWT>=2.9,<3
+prometheus-fastapi-instrumentator>=7.0,<8
+httpx>=0.27,<1

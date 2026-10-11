@@ -1,0 +1,16 @@
+# Development extras (use together with the main file):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# Publishes each service and Postgres on localhost ONLY, so you can open
+# http://localhost:8001/docs (auth), 8002 (employee), 8003 (leave), 8004 (payroll)
+# and connect a DB client to localhost:5432. Never use this file in production.
+services:
+  postgres:
+    ports: ["127.0.0.1:5432:5432"]
+  auth-service:
+    ports: ["127.0.0.1:8001:8000"]
+  employee-service:
+    ports: ["127.0.0.1:8002:8000"]
+  leave-service:
+    ports: ["127.0.0.1:8003:8000"]
+  payroll-service:
+    ports: ["127.0.0.1:8004:8000"]

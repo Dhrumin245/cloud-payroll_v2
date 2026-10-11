@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: leave-service
+  labels:
+    app: leave-service
+    app.kubernetes.io/part-of: cloud-payroll
+spec:
+  selector:
+    app: leave-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leave-service
+  labels:
+    app: leave-service
+    app.kubernetes.io/part-of: cloud-payroll
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0      # a new pod must be Ready before an old one is removed
+  selector:
+    matchLabels:
+      app: leave-service
+  template:
+    metadata:
+      labels:
+        app: leave-service
+        app.kubernetes.io/part-of: cloud-payroll
+      annotations:
+        prometheus.io/scrape: "true"     # picked up by Prometheus' pod discovery
+        prometheus.io/port: "8000"
+    spec:
+      automountServiceAccountToken: false
+      affinity:
+        podAntiAffinity:                 # spread replicas over nodes when there is more than one
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: leave-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001                 # the user created in the Dockerfile
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432; do echo waiting for postgres; sleep 2; done"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+        - name: migrate     # safe with 2+ replicas: migrations take a PostgreSQL advisory lock
+          image: cloud-payroll/leave-service:local
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: app-config }
+          env:
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: app-secrets, key: JWT_SECRET } }
+            - name: LEAVE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: LEAVE_DB_PASSWORD } }
+            - name: DATABASE_URL         # $(...) is expanded by Kubernetes from the variable above
+              value: postgresql+psycopg://leave_svc:$(LEAVE_DB_PASSWORD)@postgres:5432/leave_db
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: app
+          image: cloud-payroll/leave-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef: { name: app-config }
+          env:
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: app-secrets, key: JWT_SECRET } }
+            - name: LEAVE_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: app-secrets, key: LEAVE_DB_PASSWORD } }
+            - name: DATABASE_URL         # $(...) is expanded by Kubernetes from the variable above
+              value: postgresql+psycopg://leave_svc:$(LEAVE_DB_PASSWORD)@postgres:5432/leave_db
+          startupProbe:                  # gives a slow start time before liveness can kill the pod
+            httpGet: { path: /health, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:                # /ready also checks the database
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:                 # /health never touches the database
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}

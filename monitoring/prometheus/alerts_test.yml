@@ -1,0 +1,190 @@
+# Unit tests for alerts.yml.  Run:  promtool test rules monitoring/prometheus/alerts_test.yml
+rule_files:
+  - alerts.yml
+evaluation_interval: 15s
+
+tests:
+  # ---------------------------------------------------------------- ServiceDown
+  - interval: 15s
+    input_series:
+      - series: 'up{job="services", service="auth-service"}'
+        values: '1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0'     # goes down at t=60s
+      - series: 'up{job="services", service="leave-service"}'
+        values: '1x15'                                  # stays up
+    alert_rule_test:
+      - eval_time: 90s          # down for 30s: only pending, not firing yet
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: services, service: auth-service }
+            exp_annotations:
+              summary: "auth-service is down"
+              description: "Prometheus could not scrape auth-service for over a minute."
+
+  # ---------------------------------------------------------------- ServiceMissing
+  - interval: 15s
+    input_series:
+      # three services have targets; leave-service has none at all (all its pods are gone)
+      - series: 'up{job="services", service="auth-service", pod="auth-1"}'
+        values: '1x40'
+      - series: 'up{job="services", service="employee-service", pod="emp-1"}'
+        values: '1x40'
+      - series: 'up{job="services", service="payroll-service", pod="pay-1"}'
+        values: '1x40'
+      - series: 'up{job="services", service="payroll-service", pod="pay-2"}'
+        values: '0x40'          # one replica failing: ServiceDown's job, not ServiceMissing's
+    alert_rule_test:
+      - eval_time: 30s          # missing, but not for a full minute yet
+        alertname: ServiceMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ServiceMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, service: leave-service }
+            exp_annotations:
+              summary: "leave-service has no running instances"
+              description: "Prometheus has no scrape target for leave-service at all (every pod gone?)."
+
+  # ---------------------------------------------------------------- HighErrorRate
+  - interval: 15s
+    input_series:
+      # leave-service: 10% of requests are 5xx
+      - series: 'http_requests_total{job="services", service="leave-service", status="5xx", handler="/leaves", method="POST"}'
+        values: '0+6x80'
+      - series: 'http_requests_total{job="services", service="leave-service", status="2xx", handler="/leaves", method="POST"}'
+        values: '0+54x80'
+      # payroll-service: 1% errors, healthy
+      - series: 'http_requests_total{job="services", service="payroll-service", status="5xx", handler="/payroll/runs", method="POST"}'
+        values: '0+1x80'
+      - series: 'http_requests_total{job="services", service="payroll-service", status="2xx", handler="/payroll/runs", method="POST"}'
+        values: '0+99x80'
+      # employee-service: 100% errors but practically no traffic (ignored)
+      - series: 'http_requests_total{job="services", service="employee-service", status="5xx", handler="/employees", method="GET"}'
+        values: '0+0.01x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels: { severity: critical, service: leave-service }
+            exp_annotations:
+              summary: "leave-service: more than 5% of requests fail with 5xx"
+              description: "Server errors for 5 minutes (ignored when traffic is under ~1 request a minute)."
+
+  # ---------------------------------------------------------------- HighLatencyP95
+  - interval: 15s
+    input_series:
+      # payroll-service: almost every request takes between 2.5s and 5s
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="payroll-service", le="1.0"}'
+        values: '0x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="payroll-service", le="2.5"}'
+        values: '0+1x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="payroll-service", le="5.0"}'
+        values: '0+10x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="payroll-service", le="+Inf"}'
+        values: '0+10x80'
+      # auth-service: everything under 1s
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="auth-service", le="1.0"}'
+        values: '0+10x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="auth-service", le="2.5"}'
+        values: '0+10x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="auth-service", le="5.0"}'
+        values: '0+10x80'
+      - series: 'http_request_duration_highr_seconds_bucket{job="services", service="auth-service", le="+Inf"}'
+        values: '0+10x80'
+    alert_rule_test:
+      - eval_time: 5m           # slow, but not for 10 minutes yet
+        alertname: HighLatencyP95
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: HighLatencyP95
+        exp_alerts:
+          - exp_labels: { severity: warning, service: payroll-service }
+            exp_annotations:
+              summary: "payroll-service: p95 latency above 2 seconds"
+              description: "95% of requests have been slower than 2s for 10 minutes."
+
+  # ---------------------------------------------------------------- DownstreamCallsFailing
+  - interval: 15s
+    input_series:
+      - series: 'downstream_calls_total{job="services", service="leave-service", target="employee-service", outcome="error"}'
+        values: '0+1x40'
+      - series: 'downstream_calls_total{job="services", service="leave-service", target="employee-service", outcome="ok"}'
+        values: '0+5x40'
+      - series: 'downstream_calls_total{job="services", service="payroll-service", target="leave-service", outcome="error"}'
+        values: '0x40'        # zero errors: must not alert
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DownstreamCallsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, service: leave-service, target: employee-service }
+            exp_annotations:
+              summary: "leave-service cannot reach employee-service"
+              description: "Calls from leave-service to employee-service have been failing for 2 minutes."
+
+  # ---------------------------------------------------------------- auth alerts
+  - interval: 15s
+    input_series:
+      - series: 'auth_logins_total{job="services", service="auth-service", result="failure"}'
+        values: '0+10x80'         # 0.67 failed logins per second
+      - series: 'auth_logins_total{job="services", service="auth-service", result="rate_limited"}'
+        values: '0+3x80'
+      - series: 'auth_logins_total{job="services", service="auth-service", result="success"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 3m           # the 5-minute rate window is not even full yet
+        alertname: LoginFailureSpike
+        exp_alerts: []
+      - eval_time: 7m           # rate is high since ~5m, but must stay high for 5 more minutes
+        alertname: LoginFailureSpike
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: LoginFailureSpike
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Many failed logins"
+              description: "More than 30 failed logins a minute for 5 minutes: possible password guessing."
+      - eval_time: 4m
+        alertname: LoginRateLimited
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Login attempts are being rate limited"
+              description: "Clients keep hitting the login rate limit: possible brute force."
+
+  # ---------------------------------------------------------------- quiet system: nothing fires
+  - interval: 15s
+    input_series:
+      - series: 'auth_logins_total{job="services", service="auth-service", result="failure"}'
+        values: '0+1x80'          # 4 per minute: normal
+      - series: 'auth_logins_total{job="services", service="auth-service", result="rate_limited"}'
+        values: '0x80'
+      - series: 'up{job="services", service="auth-service"}'
+        values: '1x80'
+      - series: 'up{job="services", service="employee-service"}'
+        values: '1x80'
+      - series: 'up{job="services", service="leave-service"}'
+        values: '1x80'
+      - series: 'up{job="services", service="payroll-service"}'
+        values: '1x80'
+    alert_rule_test:
+      - { eval_time: 15m, alertname: ServiceMissing, exp_alerts: [] }
+      - { eval_time: 15m, alertname: LoginFailureSpike, exp_alerts: [] }
+      - { eval_time: 15m, alertname: LoginRateLimited, exp_alerts: [] }
+      - { eval_time: 15m, alertname: ServiceDown, exp_alerts: [] }
+
+  # ---------------------------------------------------------------- BankDetailsRevealSpike
+  - interval: 1m
+    input_series:
+      - series: 'employee_bank_reveals_total{job="services", service="employee-service"}'
+        values: '0+10x150'        # 600 reveals per hour
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: BankDetailsRevealSpike
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Unusually many bank account reveals"
+              description: "More than 100 full account numbers revealed in an hour (one bank file reveals one per employee). Check the audit log."

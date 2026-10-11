@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI's Depends() in argument defaults is the intended pattern
+
+[lint.per-file-ignores]
+# env vars must be set before the app is imported
+"tests/conftest.py" = ["E402"]
